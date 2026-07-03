@@ -1,0 +1,6 @@
+aiogram>=3.4
+sqlalchemy>=2.0
+asyncpg
+pydantic-settings
+apscheduler
+greenlet
