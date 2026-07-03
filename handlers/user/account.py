@@ -11,7 +11,7 @@ from keyboards.user import account_kb, repeat_order_kb, user_order_kb, user_orde
 from services import funnel_service
 from services.relay_service import relay
 from states.order import OrderFSM
-from utils.message import image_input, remember_bot_messages, send_step
+from utils.message import remember_bot_messages, send_photo_or_message, send_step
 from . import checkout
 
 router = Router()
@@ -113,12 +113,14 @@ async def show_order(cb: CallbackQuery, state: FSMContext):
 
     kb = user_order_kb(order.id, can_edit=order.status in EDITABLE_STATUSES)
     if order.result_image_url:
-        msg = await cb.bot.send_photo(
+        msg = await send_photo_or_message(
+            cb.bot,
             cb.message.chat.id,
-            image_input(order.result_image_url),
-            caption=text,
+            order.result_image_url,
+            text,
             parse_mode="HTML",
             reply_markup=kb,
+            log_context=f"account_order:{order.id}",
         )
         await remember_bot_messages(state, [msg])
     else:

@@ -19,9 +19,9 @@ from states.order import OrderFSM
 from utils.message import (
     delete_last_bot_messages,
     delete_message_ids,
-    image_input,
     last_bot_message_ids,
     remember_bot_messages,
+    send_photo_or_message,
     send_step,
 )
 
@@ -45,21 +45,15 @@ async def _show_product_result(bot, chat_id: int, state: FSMContext, product):
     asyncio.create_task(delete_message_ids(bot, chat_id, old_ids))
 
     text = _product_text(product)
-    if product.image_url:
-        msg = await bot.send_photo(
-            chat_id,
-            image_input(product.image_url),
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=catalog_result_kb(product.id),
-        )
-    else:
-        msg = await bot.send_message(
-            chat_id,
-            text,
-            parse_mode="HTML",
-            reply_markup=catalog_result_kb(product.id),
-        )
+    msg = await send_photo_or_message(
+        bot,
+        chat_id,
+        product.image_url,
+        text,
+        parse_mode="HTML",
+        reply_markup=catalog_result_kb(product.id),
+        log_context=f"catalog_product:{product.id}",
+    )
     await remember_bot_messages(state, [msg])
 
 
@@ -136,7 +130,7 @@ async def _show_catalog_step(bot, chat_id: int, state: FSMContext):
         text,
         catalog_options_kb(
             options,
-            show_counts=(next_step == "shape"),
+            show_counts=False,
             show_restart=(next_step != "shape"),
         ),
     )

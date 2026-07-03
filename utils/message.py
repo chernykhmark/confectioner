@@ -4,6 +4,7 @@ import logging
 from aiogram import Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile
+from aiogram.exceptions import TelegramBadRequest
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ async def delete_message_ids(bot: Bot, chat_id: int, ids: list[int]):
     async def delete_one(mid: int):
         try:
             await bot.delete_message(chat_id, mid)
+        except TelegramBadRequest as exc:
+            if "message to delete not found" in str(exc):
+                log.info("delete_message_not_found chat_id=%s message_id=%s", chat_id, mid)
+                return
+            log.exception("delete_message_bad_request chat_id=%s message_id=%s", chat_id, mid)
         except Exception:
             log.exception("delete_message_failed chat_id=%s message_id=%s", chat_id, mid)
 
@@ -67,6 +73,42 @@ async def send_step(
     await remember_bot_messages(state, [msg])
     asyncio.create_task(delete_message_ids(bot, chat_id, old_ids))
     return msg
+
+
+async def send_photo_or_message(
+    bot: Bot,
+    chat_id: int,
+    image_url: str | None,
+    text: str,
+    *,
+    reply_markup=None,
+    parse_mode: str | None = None,
+    log_context: str = "",
+):
+    if image_url:
+        try:
+            return await bot.send_photo(
+                chat_id,
+                image_input(image_url),
+                caption=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+        except Exception:
+            log.warning(
+                "send_photo_failed_fallback_to_message chat_id=%s context=%s image_url=%r",
+                chat_id,
+                log_context,
+                image_url,
+                exc_info=True,
+            )
+
+    return await bot.send_message(
+        chat_id,
+        text,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
+    )
 
 
 async def send_replacing_message(

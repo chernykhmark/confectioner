@@ -16,9 +16,9 @@ from services import funnel_service
 from states.order import OrderFSM
 from utils.message import (
     delete_message_ids,
-    image_input,
     last_bot_message_ids,
     remember_bot_messages,
+    send_photo_or_message,
     send_step,
 )
 
@@ -227,14 +227,13 @@ async def show_confirm(bot, chat_id: int, state: FSMContext):
     old_ids = last_bot_message_ids(await state.get_data())
     asyncio.create_task(delete_message_ids(bot, chat_id, old_ids))
 
-    if product and product.image_url:
-        msg = await bot.send_photo(
-            chat_id,
-            image_input(product.image_url),
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=confirm_kb(),
-        )
-    else:
-        msg = await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=confirm_kb())
+    msg = await send_photo_or_message(
+        bot,
+        chat_id,
+        product.image_url if product else None,
+        text,
+        parse_mode="HTML",
+        reply_markup=confirm_kb(),
+        log_context=f"checkout_product:{product.id}" if product else "checkout",
+    )
     await remember_bot_messages(state, [msg])
