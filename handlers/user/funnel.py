@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -6,33 +9,113 @@ from db.base import async_session
 from db.models import ComponentType
 from states.order import OrderFSM
 from services import funnel_service
-from keyboards.user import components_kb, date_wishes_kb, confirm_kb
-from utils.message import send_step
+from keyboards.user import (
+    budget_kb,
+    component_card_kb,
+    components_kb,
+    decoration_multi_kb,
+)
+from utils.message import (
+    delete_last_bot_messages,
+    delete_message_ids,
+    image_input,
+    last_bot_message_ids,
+    remember_bot_messages,
+    send_step,
+)
 from config import settings
 from handlers.admin.monitoring import registry  # in-memory реестр сессий
 # ... импорты — добавить:
-from db.repositories import users as users_repo
+from db.repositories import funnel_events, users as users_repo
 from db.repositories import sessions as sessions_repo
 
 
 router = Router()
+log = logging.getLogger(__name__)
 
 # state -> (data-key, следующее состояние, следующий тип/None)
-STEP_ORDER = ["occasion", "persons", "shape", "filling", "decoration"]
+STEP_ORDER = ["occasion", "persons", "shape", "decoration"]
 
 
 from sqlalchemy import select
 from db.models import User
 
-async def _persist(bot, chat_id, state, step_key):
+def _draft_from_data(data: dict) -> dict:
+    return {
+        k: v for k, v in data.items()
+        if k not in ("last_bot_message_id", "last_bot_message_ids")
+    }
+
+
+async def _persist_draft(chat_id, step_key, draft):
     """Дублировать текущий шаг и выбор в user_sessions."""
-    data = await state.get_data()
-    draft = {k: v for k, v in data.items() if k != "last_bot_message_id"}
+    if not draft:
+        return
+
     async with async_session() as s:
         res = await s.execute(select(User).where(User.telegram_id == chat_id))
         user = res.scalar_one_or_none()
         if user:
             await sessions_repo.upsert_session(s, user.id, step_key, draft)
+
+
+async def _log_funnel_event(tg_user, event_type: str, step: str | None = None, payload: dict | None = None):
+    try:
+        async with async_session() as s:
+            user = await users_repo.get_or_create_user(s, tg_user)
+            await funnel_events.log_event(
+                s,
+                user_id=user.id,
+                event_type=event_type,
+                step=step,
+                payload=payload,
+            )
+    except Exception:
+        log.exception("funnel_event_write_failed event_type=%s step=%s", event_type, step)
+
+
+def _component_text(component) -> str:
+    price_delta = int(component.price_delta or 0)
+    price = f"+{price_delta}₽" if price_delta else "без доплаты"
+    text = f"🎂 <b>{component.name}</b>\n{price}"
+    if getattr(component, "short_description", None):
+        text += f"\n{component.short_description}"
+    return text
+
+
+async def _send_component_cards(bot, chat_id, state, title, components):
+    old_ids = last_bot_message_ids(await state.get_data())
+    asyncio.create_task(delete_message_ids(bot, chat_id, old_ids))
+    messages = [await bot.send_message(chat_id, title)]
+
+    for component in components:
+        caption = _component_text(component)
+        if component.image_url:
+            try:
+                msg = await bot.send_photo(
+                    chat_id,
+                    image_input(component.image_url),
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=component_card_kb(component.id),
+                )
+            except Exception:
+                msg = await bot.send_message(
+                    chat_id,
+                    caption,
+                    parse_mode="HTML",
+                    reply_markup=component_card_kb(component.id),
+                )
+        else:
+            msg = await bot.send_message(
+                chat_id,
+                caption,
+                parse_mode="HTML",
+                reply_markup=component_card_kb(component.id),
+            )
+        messages.append(msg)
+
+    await remember_bot_messages(state, messages)
 
 
 async def _show_component_step(bot, chat_id, state, step_key):
@@ -41,107 +124,121 @@ async def _show_component_step(bot, chat_id, state, step_key):
         comps = await funnel_service.components_for_step(s, type_map[step_key])
     await state.set_state(getattr(OrderFSM, step_key))
     registry.set(chat_id, step_key)
-    await _persist(bot, chat_id, state, step_key)
-    await send_step(bot, chat_id, state,
-                    funnel_service.STEP_TITLES[step_key], components_kb(comps))
+    asyncio.create_task(_persist_draft(chat_id, step_key, _draft_from_data(await state.get_data())))
+    title = funnel_service.STEP_TITLES[step_key]
+    if step_key == "decoration":
+        selected = (await state.get_data()).get("sel_decoration", [])
+        await send_step(
+            bot,
+            chat_id,
+            state,
+            f"{title}\n\nМожно выбрать до трёх элементов.",
+            decoration_multi_kb(comps, selected),
+        )
+        return
+    if any(c.image_url for c in comps):
+        await _send_component_cards(bot, chat_id, state, title, comps)
+    else:
+        await send_step(bot, chat_id, state, title, components_kb(comps))
 
 
 @router.callback_query(F.data == "menu:custom")
 async def start_funnel(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
     await state.clear()
     try:
         await cb.message.delete()
     except Exception:
-        pass
-    await _show_component_step(cb.bot, cb.message.chat.id, state, "occasion")
+        log.exception("start_funnel_delete_failed chat_id=%s", cb.message.chat.id)
+    await _log_funnel_event(cb.from_user, "funnel_started", "budget")
+    await state.set_state(OrderFSM.budget)
+    await send_step(
+        cb.bot,
+        cb.message.chat.id,
+        state,
+        "Какой ориентировочный бюджет?",
+        budget_kb(),
+    )
+
+
+@router.callback_query(OrderFSM.budget, F.data.startswith("budget:"))
+async def pick_budget(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
+    budget = cb.data.split(":", 1)[1]
+    await state.update_data(budget=budget)
+    await _log_funnel_event(cb.from_user, "step_selected", "budget", {"budget": budget})
+    await _show_component_step(cb.bot, cb.message.chat.id, state, "occasion")
 
 
 @router.callback_query(OrderFSM.occasion, F.data.startswith("comp:"))
 async def pick_occasion(cb: CallbackQuery, state: FSMContext):
-    await state.update_data(sel_occasion=int(cb.data.split(":")[1]))
-    await _show_component_step(cb.bot, cb.message.chat.id, state, "persons")
     await cb.answer()
+    component_id = int(cb.data.split(":")[1])
+    await state.update_data(sel_occasion=component_id)
+    await _log_funnel_event(cb.from_user, "step_selected", "occasion", {"component_id": component_id})
+    await _show_component_step(cb.bot, cb.message.chat.id, state, "persons")
 
 
 @router.callback_query(OrderFSM.persons, F.data.startswith("comp:"))
 async def pick_persons(cb: CallbackQuery, state: FSMContext):
-    await state.update_data(sel_persons=int(cb.data.split(":")[1]))
-    await _show_component_step(cb.bot, cb.message.chat.id, state, "shape")
     await cb.answer()
+    component_id = int(cb.data.split(":")[1])
+    await state.update_data(sel_persons=component_id)
+    await _log_funnel_event(cb.from_user, "step_selected", "persons", {"component_id": component_id})
+    await _show_component_step(cb.bot, cb.message.chat.id, state, "shape")
 
 
 @router.callback_query(OrderFSM.shape, F.data.startswith("comp:"))
 async def pick_shape(cb: CallbackQuery, state: FSMContext):
-    await state.update_data(sel_shape=int(cb.data.split(":")[1]))
-    await _show_component_step(cb.bot, cb.message.chat.id, state, "filling")
     await cb.answer()
-
-
-@router.callback_query(OrderFSM.filling, F.data.startswith("comp:"))
-async def pick_filling(cb: CallbackQuery, state: FSMContext):
-    await state.update_data(sel_filling=int(cb.data.split(":")[1]))
+    component_id = int(cb.data.split(":")[1])
+    await state.update_data(sel_shape=component_id)
+    await _log_funnel_event(cb.from_user, "step_selected", "shape", {"component_id": component_id})
     await _show_component_step(cb.bot, cb.message.chat.id, state, "decoration")
+
+
+@router.callback_query(OrderFSM.decoration, F.data.startswith("decor:toggle:"))
+async def toggle_decoration(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-
-
-@router.callback_query(OrderFSM.decoration, F.data.startswith("comp:"))
-async def pick_decoration(cb: CallbackQuery, state: FSMContext):
-    await state.update_data(sel_decoration=int(cb.data.split(":")[1]))
-    await state.set_state(OrderFSM.date_wishes)
-    registry.set(cb.message.chat.id, "date_wishes")
-    await _persist(cb.bot, cb.message.chat.id, state, "date_wishes")
-    await send_step(
-        cb.bot, cb.message.chat.id, state,
-        "📅 Введите желаемую дату (ДД.ММ.ГГГГ) и пожелания одним сообщением:",
-        date_wishes_kb(),
+    component_id = int(cb.data.split(":")[2])
+    data = await state.get_data()
+    selected = list(data.get("sel_decoration", []))
+    if component_id in selected:
+        selected.remove(component_id)
+    elif len(selected) >= 3:
+        await cb.answer("Можно выбрать не больше трёх элементов", show_alert=True)
+        return
+    else:
+        selected.append(component_id)
+    await state.update_data(sel_decoration=selected)
+    await _log_funnel_event(
+        cb.from_user,
+        "step_selected",
+        "decoration",
+        {"component_id": component_id, "selected_ids": selected},
     )
+    await _show_component_step(cb.bot, cb.message.chat.id, state, "decoration")
+
+
+@router.callback_query(OrderFSM.decoration, F.data == "decor:done")
+async def pick_decoration_done(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("sel_decoration"):
+        await cb.answer("Выберите хотя бы один элемент оформления", show_alert=True)
+        return
     await cb.answer()
+    await _log_funnel_event(cb.from_user, "date_reached", "date_wishes")
+    from handlers.user.checkout import ask_date
+    await ask_date(cb.bot, cb.message.chat.id, state)
 
 
 @router.message(OrderFSM.date_wishes, F.text)
 async def input_date_wishes(message: Message, state: FSMContext):
-    text = message.text.strip()
-    # первое «слово» пытаемся трактовать как дату, остальное — пожелания
-    parts = text.split(maxsplit=1)
-    desired_date = parts[0] if parts else None
-    wishes = parts[1] if len(parts) > 1 else None
-    await state.update_data(desired_date=desired_date, wishes=wishes)
-
-    # переходим к подтверждению
-    await _show_confirm(message.bot, message.chat.id, state)
+    from handlers.user.checkout import process_date_text
+    await process_date_text(message, state)
 
 
 async def _show_confirm(bot, chat_id, state):
-    data = await state.get_data()
-    ids = []
-    for key in STEP_ORDER:
-        cid = data.get(f"sel_{key}")
-        if cid:
-            ids.append(cid)
-    async with async_session() as s:
-        desc = await funnel_service.build_description(s, ids)
-        total = await funnel_service.calculate_price(s, ids, settings.base_price)
-
-    wishes = data.get("wishes")
-    date_str = data.get("desired_date") or "не указана"
-    text = (
-            "🧾 <b>Ваш торт</b>\n\n"
-            f"Состав: {desc}\n"
-            f"Дата: {date_str}\n"
-            + (f"Пожелания: {wishes}\n" if wishes else "")
-            + f"\n💰 Итоговая цена: <b>{int(total)}₽</b>"
-    )
-    await state.set_state(OrderFSM.confirming)
+    from handlers.user.checkout import show_confirm
     await state.update_data(_is_template=False)
-    registry.set(chat_id, "confirming")
-    await _persist(bot, chat_id, state, "confirming")                  # в _show_confirm
-
-    data2 = await state.get_data()
-    if mid := data2.get("last_bot_message_id"):
-        try:
-            await bot.delete_message(chat_id, mid)
-        except Exception:
-            pass
-    msg = await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=confirm_kb())
-    await state.update_data(last_bot_message_id=msg.message_id)
+    await show_confirm(bot, chat_id, state)

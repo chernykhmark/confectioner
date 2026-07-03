@@ -1,0 +1,13 @@
+services:
+  bot:
+    build:
+      context: .
+    image: confectioner-bot:latest
+    container_name: confectioner-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RUN_DB_MIGRATIONS: ${RUN_DB_MIGRATIONS:-1}
+    volumes:
+      - ./logs:/app/logs

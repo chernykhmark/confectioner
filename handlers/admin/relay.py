@@ -4,6 +4,8 @@ Relay-хендлеры со стороны админа.
 - Любое текстовое сообщение админа в активном relay → пересылается юзеру.
 - «Завершить диалог» → стоп relay.
 """
+import logging
+
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -12,6 +14,7 @@ from config import settings
 from services.relay_service import relay
 
 router = Router()
+log = logging.getLogger(__name__)
 
 
 def _is_admin(uid: int) -> bool:
@@ -36,10 +39,13 @@ async def relay_start(cb: CallbackQuery):
         "Все ваши сообщения пересылаются ему. Для выхода — кнопка ниже.",
         parse_mode="HTML", reply_markup=_end_kb(),
     )
-    await cb.bot.send_message(
-        user_tg, "👩‍🍳 Здравствуйте! С вами на связи кондитер. "
-                 "Напишите, если остались вопросы по заказу 🎂"
-    )
+    try:
+        await cb.bot.send_message(
+            user_tg, "👩‍🍳 Здравствуйте! С вами на связи кондитер. "
+                     "Напишите, если остались вопросы по заказу 🎂"
+        )
+    except Exception:
+        log.exception("relay_start_user_message_failed user_tg=%s", user_tg)
     await cb.answer()
 
 
@@ -50,7 +56,10 @@ async def relay_end(cb: CallbackQuery):
         return
     user_tg = relay.stop_by_admin(cb.from_user.id)
     if user_tg:
-        await cb.bot.send_message(user_tg, "✅ Диалог с кондитером завершён.")
+        try:
+            await cb.bot.send_message(user_tg, "✅ Диалог с кондитером завершён.")
+        except Exception:
+            log.exception("relay_end_user_message_failed user_tg=%s", user_tg)
     await cb.message.answer("🚪 Диалог завершён.")
     await cb.answer()
 
@@ -59,4 +68,7 @@ async def relay_end(cb: CallbackQuery):
 @router.message(F.text, lambda m: relay.user_for_admin(m.from_user.id) is not None)
 async def admin_relay_message(message: Message):
     user_tg = relay.user_for_admin(message.from_user.id)
-    await message.bot.send_message(user_tg, message.text)
+    try:
+        await message.bot.send_message(user_tg, message.text)
+    except Exception:
+        log.exception("relay_admin_to_user_failed admin_id=%s user_tg=%s", message.from_user.id, user_tg)

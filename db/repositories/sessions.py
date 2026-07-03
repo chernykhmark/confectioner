@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from db.models import UserSession
 
@@ -32,7 +33,7 @@ async def delete_session(s: AsyncSession, user_id: int):
 
 async def get_active_sessions(s: AsyncSession) -> list[UserSession]:
     """Все сессии с непустым draft (для мониторинга A2)."""
-    res = await s.execute(select(UserSession))
+    res = await s.execute(select(UserSession).options(selectinload(UserSession.user)))
     return [x for x in res.scalars().all() if x.draft]
 
 

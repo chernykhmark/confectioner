@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -7,10 +6,11 @@ from config import settings
 from handlers import register_all_routers
 from middlewares.relay_mw import RelayMiddleware
 from services.scheduler import setup_scheduler
+from utils.logging_config import setup_logging
 
 
 async def main():
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher(storage=MemoryStorage())
 

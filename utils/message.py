@@ -1,14 +1,92 @@
+import asyncio
+import logging
+
 from aiogram import Bot
 from aiogram.fsm.context import FSMContext
+from aiogram.types import FSInputFile
+
+log = logging.getLogger(__name__)
 
 
-async def send_step(bot: Bot, chat_id: int, state: FSMContext, text: str, kb=None):
-    data = await state.get_data()
+def image_input(image_url: str):
+    """Return a Telegram-compatible image input: URL/file_id string or local file."""
+    if image_url.startswith(("/", ".")):
+        return FSInputFile(image_url)
+    return image_url
+
+
+def last_bot_message_ids(data: dict) -> list[int]:
+    ids = list(data.get("last_bot_message_ids") or [])
     if mid := data.get("last_bot_message_id"):
+        if mid not in ids:
+            ids.append(mid)
+    return ids
+
+
+async def delete_message_ids(bot: Bot, chat_id: int, ids: list[int]):
+    if not ids:
+        return
+
+    async def delete_one(mid: int):
         try:
             await bot.delete_message(chat_id, mid)
         except Exception:
-            pass
-    msg = await bot.send_message(chat_id, text, reply_markup=kb)
-    await state.update_data(last_bot_message_id=msg.message_id)
+            log.exception("delete_message_failed chat_id=%s message_id=%s", chat_id, mid)
+
+    await asyncio.gather(*(delete_one(mid) for mid in ids))
+
+
+async def delete_last_bot_messages(bot: Bot, chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    await delete_message_ids(bot, chat_id, last_bot_message_ids(data))
+    await state.update_data(last_bot_message_id=None, last_bot_message_ids=[])
+
+
+async def remember_bot_messages(state: FSMContext, messages):
+    ids = [msg.message_id for msg in messages if msg]
+    await state.update_data(
+        last_bot_message_id=ids[-1] if ids else None,
+        last_bot_message_ids=ids,
+    )
+
+
+async def send_step(
+    bot: Bot,
+    chat_id: int,
+    state: FSMContext,
+    text: str,
+    kb=None,
+    parse_mode: str | None = None,
+):
+    old_ids = last_bot_message_ids(await state.get_data())
+    try:
+        msg = await bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=kb)
+    except Exception:
+        log.exception("send_step_failed chat_id=%s", chat_id)
+        raise
+    await remember_bot_messages(state, [msg])
+    asyncio.create_task(delete_message_ids(bot, chat_id, old_ids))
+    return msg
+
+
+async def send_replacing_message(
+    bot: Bot,
+    chat_id: int,
+    state: FSMContext,
+    text: str,
+    kb=None,
+    parse_mode: str | None = None,
+):
+    await delete_last_bot_messages(bot, chat_id, state)
+    try:
+        msg = await bot.send_message(
+            chat_id,
+            text,
+            parse_mode=parse_mode,
+            reply_markup=kb,
+        )
+    except Exception:
+        log.exception("send_replacing_message_failed chat_id=%s", chat_id)
+        raise
+    await remember_bot_messages(state, [msg])
     return msg

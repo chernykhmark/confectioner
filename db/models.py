@@ -76,6 +76,25 @@ class UserSession(Base):
     user: Mapped["User"] = relationship(back_populates="session")
 
 
+class FunnelEvent(Base):
+    __tablename__ = "funnel_events"
+    __table_args__ = (
+        Index("idx_funnel_events_user", "user_id"),
+        Index("idx_funnel_events_type", "event_type"),
+        Index("idx_funnel_events_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("user_sessions.id", ondelete="SET NULL"))
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    step: Mapped[str | None] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Component(Base):
     __tablename__ = "components"
     __table_args__ = (Index("idx_components_type", "type"),)
@@ -83,6 +102,7 @@ class Component(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     type: Mapped[ComponentType] = mapped_column(SAEnum(ComponentType), nullable=False)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
+    short_description: Mapped[str | None] = mapped_column(Text)
     image_url: Mapped[str | None] = mapped_column(Text)
     weight_grams: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
     price_delta: Mapped[Decimal] = mapped_column(Numeric(9, 2), nullable=False, default=0)
@@ -95,7 +115,7 @@ class Product(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    description: Mapped[str | None] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
     price: Mapped[Decimal] = mapped_column(Numeric(9, 2), nullable=False)
     image_url: Mapped[str | None] = mapped_column(Text)
     is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -140,6 +160,13 @@ class Order(Base):
     description: Mapped[str | None] = mapped_column(String(255))
     total_price: Mapped[Decimal | None] = mapped_column(Numeric(9, 2))
     desired_date: Mapped[date | None] = mapped_column(Date)
+    delivery_type: Mapped[str | None] = mapped_column(String(16))
+    delivery_address: Mapped[str | None] = mapped_column(Text)
+    delivery_comment: Mapped[str | None] = mapped_column(Text)
+    delivery_time_from: Mapped[str | None] = mapped_column(String(5))
+    delivery_time_to: Mapped[str | None] = mapped_column(String(5))
+    customer_comment: Mapped[str | None] = mapped_column(Text)
+    admin_comment: Mapped[str | None] = mapped_column(Text)
     status: Mapped[OrderStatus] = mapped_column(
         SAEnum(OrderStatus), nullable=False, default=OrderStatus.created
     )
@@ -214,3 +241,15 @@ class ComponentConflict(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     a_id: Mapped[int] = mapped_column(ForeignKey("components.id"), nullable=False)
     b_id: Mapped[int] = mapped_column(ForeignKey("components.id"), nullable=False)
+
+
+class CalendarDay(Base):
+    __tablename__ = "calendar_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[date] = mapped_column(Date, unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="available")
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
