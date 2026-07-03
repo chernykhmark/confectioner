@@ -3,6 +3,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import User
 from config import settings
 
+from sqlalchemy import select
+from db.models import User
+
+
+
 
 async def get_or_create_user(session: AsyncSession, tg_user) -> User:
     res = await session.execute(select(User).where(User.telegram_id == tg_user.id))

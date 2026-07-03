@@ -4,3 +4,4 @@ asyncpg
 pydantic-settings
 apscheduler
 greenlet
+apscheduler

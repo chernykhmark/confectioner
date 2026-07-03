@@ -10,11 +10,29 @@ from keyboards.user import components_kb, date_wishes_kb, confirm_kb
 from utils.message import send_step
 from config import settings
 from handlers.admin.monitoring import registry  # in-memory реестр сессий
+# ... импорты — добавить:
+from db.repositories import users as users_repo
+from db.repositories import sessions as sessions_repo
+
 
 router = Router()
 
 # state -> (data-key, следующее состояние, следующий тип/None)
 STEP_ORDER = ["occasion", "persons", "shape", "filling", "decoration"]
+
+
+from sqlalchemy import select
+from db.models import User
+
+async def _persist(bot, chat_id, state, step_key):
+    """Дублировать текущий шаг и выбор в user_sessions."""
+    data = await state.get_data()
+    draft = {k: v for k, v in data.items() if k != "last_bot_message_id"}
+    async with async_session() as s:
+        res = await s.execute(select(User).where(User.telegram_id == chat_id))
+        user = res.scalar_one_or_none()
+        if user:
+            await sessions_repo.upsert_session(s, user.id, step_key, draft)
 
 
 async def _show_component_step(bot, chat_id, state, step_key):
@@ -23,6 +41,7 @@ async def _show_component_step(bot, chat_id, state, step_key):
         comps = await funnel_service.components_for_step(s, type_map[step_key])
     await state.set_state(getattr(OrderFSM, step_key))
     registry.set(chat_id, step_key)
+    await _persist(bot, chat_id, state, step_key)
     await send_step(bot, chat_id, state,
                     funnel_service.STEP_TITLES[step_key], components_kb(comps))
 
@@ -71,6 +90,7 @@ async def pick_decoration(cb: CallbackQuery, state: FSMContext):
     await state.update_data(sel_decoration=int(cb.data.split(":")[1]))
     await state.set_state(OrderFSM.date_wishes)
     registry.set(cb.message.chat.id, "date_wishes")
+    await _persist(cb.bot, cb.message.chat.id, state, "date_wishes")
     await send_step(
         cb.bot, cb.message.chat.id, state,
         "📅 Введите желаемую дату (ДД.ММ.ГГГГ) и пожелания одним сообщением:",
@@ -115,6 +135,7 @@ async def _show_confirm(bot, chat_id, state):
     await state.set_state(OrderFSM.confirming)
     await state.update_data(_is_template=False)
     registry.set(chat_id, "confirming")
+    await _persist(bot, chat_id, state, "confirming")                  # в _show_confirm
 
     data2 = await state.get_data()
     if mid := data2.get("last_bot_message_id"):

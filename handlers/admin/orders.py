@@ -9,6 +9,10 @@ from keyboards.admin import (
     orders_filter_kb, orders_list_kb, order_card_kb, STATUS_LABEL,
 )
 from config import settings
+from keyboards.admin import (
+    orders_filter_kb, orders_list_kb, order_card_kb, STATUS_LABEL, admin_menu,  # +admin_menu
+)
+
 
 router = Router()
 
@@ -96,3 +100,12 @@ async def set_status(cb: CallbackQuery):
         parse_mode="HTML", reply_markup=order_card_kb(order),
     )
     await cb.answer("Статус обновлён")
+
+
+@router.callback_query(F.data == "adm:menu")
+async def back_to_admin_menu(cb: CallbackQuery):
+    if not _is_admin(cb):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.message.edit_text("🛠 Панель администратора:", reply_markup=admin_menu())
+    await cb.answer()

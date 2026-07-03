@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery
 
 from db.base import async_session
 from db.repositories import users as users_repo, orders as order_repo
+from db.repositories import sessions as sessions_repo   # NEW
 from services import order_service, notify_service
 from states.order import OrderFSM
 from keyboards.user import main_menu
@@ -25,8 +26,8 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
                 desired_date_raw=data.get("desired_date"))
         else:
             order = await order_service.create_custom_order(s, user.id, data)
-        # подгрузим отношения для уведомления
         order = await order_repo.get_with_relations(s, order.id)
+        await sessions_repo.delete_session(s, user.id)   # NEW: заказ создан → сессия удалена
 
     await notify_service.notify_admin_new_order(cb.bot, order, order.user)
 
@@ -47,6 +48,9 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(OrderFSM.confirming, F.data == "order:cancel")
 async def cancel_order(cb: CallbackQuery, state: FSMContext):
+    async with async_session() as s:                     # NEW
+        user = await users_repo.get_or_create_user(s, cb.from_user)
+        await sessions_repo.delete_session(s, user.id)   # NEW: отмена → сессия удалена
     await state.clear()
     registry.clear(cb.message.chat.id)
     try:

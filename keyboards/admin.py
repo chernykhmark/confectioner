@@ -47,3 +47,10 @@ def order_card_kb(order) -> InlineKeyboardMarkup:
             callback_data=f"adm:setstatus:{order.id}:{st.value}")])
     rows.append([InlineKeyboardButton(text="⬅️ К списку", callback_data="adm:orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def orders_filter_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Открытые", callback_data="adm:list:open")],
+        [InlineKeyboardButton(text="⚪ Закрытые", callback_data="adm:list:closed")],
+        [InlineKeyboardButton(text="⬅️ В меню", callback_data="adm:menu")],  # NEW
+    ])
