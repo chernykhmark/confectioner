@@ -92,14 +92,19 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
         log.exception("confirm_order_callback_delete_failed order_id=%s", order.id)
 
     if manual_user_id:
-        final_text = f"✅ Заказ #{order.id} создан для клиента. Он получил уведомление."
+        from keyboards.admin import admin_menu
+        await cb.message.answer(
+            f"✅ Заказ #{order.id} создан для клиента. Он получил уведомление.",
+            reply_markup=admin_menu(),
+        )
     else:
-        final_text = (
+        await cb.message.answer(
             f"✅ Заказ #{order.id} оформлен!\n"
             f"Цена: <b>{int(order.total_price or 0)}₽</b>\n"
-            f"Мы свяжемся с вами. Спасибо! 🎂"
+            f"Мы свяжемся с вами. Спасибо! 🎂",
+            parse_mode="HTML",
+            reply_markup=main_menu(),
         )
-    await cb.message.answer(final_text, parse_mode="HTML", reply_markup=main_menu())
 
 
 @router.callback_query(OrderFSM.confirming, F.data == "order:cancel")
