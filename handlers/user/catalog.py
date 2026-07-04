@@ -70,13 +70,10 @@ async def _show_catalog_step(bot, chat_id: int, state: FSMContext):
         products = await product_repo.list_catalog_products(session)
         candidates = catalog_service.candidates_for(products, selected_ids)
         next_step = catalog_service.next_step_key(selected_steps)
-        selected_text = await catalog_service.selected_description(session, selected_ids)
 
     if not candidates:
         await send_step(
-            bot,
-            chat_id,
-            state,
+            bot, chat_id, state,
             "Не нашли точного варианта по выбранным параметрам.\n\n"
             "Можно подобрать заново или перейти в индивидуальный заказ.",
             catalog_empty_kb(),
@@ -100,11 +97,7 @@ async def _show_catalog_step(bot, chat_id: int, state: FSMContext):
         return
 
     if next_step == "filling":
-        text = (
-            f"{catalog_service.CATALOG_TITLES[next_step]}\n\n"
-            f"Уже выбрано: {selected_text}"
-        )
-        await send_step(bot, chat_id, state, text, catalog_products_kb(candidates))
+        await send_step(bot, chat_id, state, catalog_service.CATALOG_TITLES[next_step], catalog_products_kb(candidates))
         return
 
     step_type = dict(catalog_service.CATALOG_STEPS)[next_step]
@@ -121,18 +114,10 @@ async def _show_catalog_step(bot, chat_id: int, state: FSMContext):
         await send_step(bot, chat_id, state, text, catalog_products_kb(candidates))
         return
 
-    title = catalog_service.CATALOG_TITLES[next_step]
-    text = f"{title}\n\nУже выбрано: {selected_text}"
     await send_step(
-        bot,
-        chat_id,
-        state,
-        text,
-        catalog_options_kb(
-            options,
-            show_counts=False,
-            show_restart=(next_step != "shape"),
-        ),
+        bot, chat_id, state,
+        catalog_service.CATALOG_TITLES[next_step],
+        catalog_options_kb(options, show_counts=False, show_restart=(next_step != "shape")),
     )
 
 

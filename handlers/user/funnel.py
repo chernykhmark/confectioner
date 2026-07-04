@@ -232,13 +232,21 @@ async def pick_decoration_done(cb: CallbackQuery, state: FSMContext):
     await ask_date(cb.bot, cb.message.chat.id, state)
 
 
-@router.message(OrderFSM.date_wishes, F.text)
-async def input_date_wishes(message: Message, state: FSMContext):
-    from handlers.user.checkout import process_date_text
-    await process_date_text(message, state)
-
 
 async def _show_confirm(bot, chat_id, state):
     from handlers.user.checkout import show_confirm
     await state.update_data(_is_template=False)
     await show_confirm(bot, chat_id, state)
+
+
+async def start_funnel_from(bot, chat_id: int, state: FSMContext, tg_user):
+    """Запуск кастомной воронки программно (для админского создания заказа)."""
+    await _log_funnel_event(tg_user, "funnel_started", "budget")
+    await state.set_state(OrderFSM.budget)
+    await send_step(bot, chat_id, state, "Какой ориентировочный бюджет?", budget_kb())
+
+
+async def start_funnel_from(bot, chat_id: int, state: FSMContext, tg_user):
+    await _log_funnel_event(tg_user, "funnel_started", "budget")
+    await state.set_state(OrderFSM.budget)
+    await send_step(bot, chat_id, state, "Какой ориентировочный бюджет?", budget_kb())

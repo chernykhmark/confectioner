@@ -1,6 +1,11 @@
+
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from keyboards.common import nav_row, BTN_HOME
 from db.models import OrderStatus
+import calendar as _calendar
+from datetime import date as _date, timedelta as _timedelta
+
 
 
 USER_STATUS_LABEL = {
@@ -22,6 +27,16 @@ def main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Личный кабинет", callback_data="menu:account")],
         [InlineKeyboardButton(text="ℹ️ Справка", callback_data="menu:help")],
     ])
+
+def user_order_kb(order_id: int, can_edit: bool = False) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Повторить заказ", callback_data=f"acct:repeat:{order_id}")]]
+    if can_edit:
+        rows.append([InlineKeyboardButton(text="Изменить дату", callback_data=f"acct:edit_date:{order_id}")])
+        rows.append([InlineKeyboardButton(text="Изменить комментарий", callback_data=f"acct:edit_comment:{order_id}")])
+        rows.append([InlineKeyboardButton(text="Отменить заказ", callback_data=f"acct:cancel:{order_id}")])
+    rows.append([InlineKeyboardButton(text="Мои заказы", callback_data="acct:orders")])
+    rows.append([BTN_HOME])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def components_kb(components) -> InlineKeyboardMarkup:
@@ -205,13 +220,17 @@ def user_orders_kb(orders) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def user_order_kb(order_id: int, can_edit: bool = False) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="Повторить заказ", callback_data=f"acct:repeat:{order_id}")]]
-    if can_edit:
-        rows.append([InlineKeyboardButton(text="Изменить дату", callback_data=f"acct:edit_date:{order_id}")])
-        rows.append([InlineKeyboardButton(text="Изменить комментарий", callback_data=f"acct:edit_comment:{order_id}")])
-        rows.append([InlineKeyboardButton(text="Отменить заказ", callback_data=f"acct:cancel:{order_id}")])
-    rows.append([InlineKeyboardButton(text="Мои заказы", callback_data="acct:orders")])
+def user_orders_kb(orders) -> InlineKeyboardMarkup:
+    rows = []
+    for order in orders:
+        description = (order.description or "заказ").replace("\n", " ")
+        if len(description) > 22:
+            description = f"{description[:19]}..."
+        rows.append([InlineKeyboardButton(
+            text=f"{order.desired_date or 'без даты'} · {USER_STATUS_LABEL.get(order.status, order.status.value)} · {description}",
+            callback_data=f"acct:order:{order.id}",
+        )])
+    rows.append([InlineKeyboardButton(text="Открыть кабинет", callback_data="menu:account")])
     rows.append([BTN_HOME])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -222,3 +241,41 @@ def repeat_order_kb(order_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Изменить дату", callback_data=f"acct:repeat_date:{order_id}")],
         [InlineKeyboardButton(text="Назад", callback_data=f"acct:order:{order_id}")],
     ])
+
+
+
+def date_pick_kb(min_date: _date, mode: str, year: int | None = None, month: int | None = None) -> InlineKeyboardMarkup:
+    """
+    mode: 'year' | 'month' | 'day'
+    Последовательный выбор: год -> месяц -> день.
+    """
+    rows = []
+    if mode == "year":
+        years = sorted({min_date.year, (min_date + _timedelta(days=365)).year})
+        for y in years:
+            rows.append([InlineKeyboardButton(text=str(y), callback_data=f"date:year:{y}")])
+    elif mode == "month":
+        for m in range(1, 13):
+            first = _date(year, m, 1)
+            last = _date(year, m, _calendar.monthrange(year, m)[1])
+            if last < min_date:
+                continue
+            names = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                     "Июль", "Август", "Сентябрь", "Октбрь", "Ноябрь", "Декабрь"]
+            rows.append([InlineKeyboardButton(text=names[m - 1], callback_data=f"date:month:{year}:{m}")])
+    elif mode == "day":
+        days_in_month = _calendar.monthrange(year, month)[1]
+        row = []
+        for d in range(1, days_in_month + 1):
+            day_date = _date(year, month, d)
+            if day_date < min_date:
+                continue
+            row.append(InlineKeyboardButton(text=str(d), callback_data=f"date:day:{year}:{month}:{d}"))
+            if len(row) == 5:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton(text="◀ Месяцы", callback_data=f"date:back_month:{year}")])
+    rows.append(nav_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows)

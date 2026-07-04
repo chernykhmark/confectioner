@@ -47,6 +47,16 @@ async def create_order(session: AsyncSession, *, user_id: int, product_id: int |
     return order
 
 
+
+async def search_by_date(session: AsyncSession, target_date: date):
+    res = await session.execute(
+        select(Order)
+        .options(selectinload(Order.user))
+        .where(Order.desired_date == target_date)
+        .order_by(Order.id.desc())
+    )
+    return res.scalars().all()
+
 async def get_with_relations(session: AsyncSession, order_id: int) -> Order | None:
     res = await session.execute(
         select(Order)

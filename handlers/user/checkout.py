@@ -11,7 +11,7 @@ from config import settings
 from db.base import async_session
 from db.models import User
 from db.repositories import calendar as calendar_repo, funnel_events, products as product_repo, users as users_repo
-from keyboards.user import confirm_kb, date_wishes_kb, delivery_time_kb, delivery_type_kb
+from keyboards.user import confirm_kb, date_pick_kb, delivery_time_kb, delivery_type_kb
 from services import funnel_service
 from states.order import OrderFSM
 from utils.message import (
@@ -21,6 +21,16 @@ from utils.message import (
     send_photo_or_message,
     send_step,
 )
+from datetime import date, timedelta
+
+from keyboards.user import confirm_kb, date_pick_kb, date_wishes_kb, delivery_time_kb, delivery_type_kb
+
+from db.repositories import calendar as _cal_repo
+
+
+
+def min_order_date() -> date:
+    return date.today() + timedelta(days=settings.min_order_days)
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -57,12 +67,15 @@ def selected_component_ids(data: dict) -> list[int]:
 
 async def ask_date(bot, chat_id: int, state: FSMContext):
     await state.set_state(OrderFSM.date_wishes)
+    md = min_order_date()
     await send_step(
         bot,
         chat_id,
         state,
-        "Выберите дату доставки/самовывоза.\n\nВведите дату в формате ДД.ММ.ГГГГ:",
-        date_wishes_kb(),
+        f"Выберите дату доставки/самовывоза.\n\n"
+        f"Заказ принимается минимум за {settings.min_order_days} дня. "
+        f"Ближайшая доступная дата: {format_date(md)}.\n\nВыберите год:",
+        date_pick_kb(md, "year"),
     )
 
 
@@ -187,6 +200,15 @@ async def show_confirm(bot, chat_id: int, state: FSMContext):
             desc = await funnel_service.build_description(session, ids)
             total = await funnel_service.calculate_price(session, ids, settings.base_price)
             weight = await funnel_service.calculate_weight_kg(session, ids)
+            # найти первую картинку среди выбранных компонентов
+            from db.models import Component
+            res_img = await session.execute(
+                select(Component.image_url)
+                .where(Component.id.in_(ids))
+                .where(Component.image_url.is_not(None))
+            )
+            first_image = res_img.scalars().first()
+            await state.update_data(_confirm_image=first_image)
 
     delivery_label = "Доставка" if data.get("delivery_type") == "delivery" else "Самовывоз"
     time_text = (
@@ -227,13 +249,71 @@ async def show_confirm(bot, chat_id: int, state: FSMContext):
     old_ids = last_bot_message_ids(await state.get_data())
     asyncio.create_task(delete_message_ids(bot, chat_id, old_ids))
 
+    fresh = await state.get_data()
+    confirm_image = product.image_url if product else fresh.get("_confirm_image")
     msg = await send_photo_or_message(
         bot,
         chat_id,
-        product.image_url if product else None,
+        confirm_image,
         text,
         parse_mode="HTML",
         reply_markup=confirm_kb(),
         log_context=f"checkout_product:{product.id}" if product else "checkout",
     )
     await remember_bot_messages(state, [msg])
+
+
+
+@router.callback_query(OrderFSM.date_wishes, F.data.startswith("date:year:"))
+async def pick_year(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    year = int(cb.data.split(":")[2])
+    await state.update_data(_pick_year=year)
+    await send_step(
+        cb.bot, cb.message.chat.id, state,
+        "Выберите месяц:",
+        date_pick_kb(min_order_date(), "month", year=year),
+    )
+
+
+@router.callback_query(OrderFSM.date_wishes, F.data.startswith("date:back_month:"))
+async def back_to_month(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    year = int(cb.data.split(":")[2])
+    await send_step(
+        cb.bot, cb.message.chat.id, state,
+        "Выберите месяц:",
+        date_pick_kb(min_order_date(), "month", year=year),
+    )
+
+
+@router.callback_query(OrderFSM.date_wishes, F.data.startswith("date:month:"))
+async def pick_month(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    _, _, year, month = cb.data.split(":")
+    year, month = int(year), int(month)
+    await state.update_data(_pick_month=month)
+    await send_step(
+        cb.bot, cb.message.chat.id, state,
+        "Выберите день:",
+        date_pick_kb(min_order_date(), "day", year=year, month=month),
+    )
+
+
+@router.callback_query(OrderFSM.date_wishes, F.data.startswith("date:day:"))
+async def pick_day(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    _, _, year, month, day = cb.data.split(":")
+    desired_date = date(int(year), int(month), int(day))
+
+    if desired_date < min_order_date():
+        await cb.answer("Эта дата недоступна", show_alert=True)
+        return
+
+    async with async_session() as session:
+        if not await _cal_repo.is_available(session, desired_date):
+            await cb.answer("На эту дату заказы не принимаются", show_alert=True)
+            return
+
+    await state.update_data(desired_date=format_date(desired_date), wishes=None)
+    await ask_delivery_type(cb.bot, cb.message.chat.id, state)

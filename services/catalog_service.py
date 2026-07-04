@@ -84,3 +84,19 @@ async def selected_description(session, selected_ids: list[int]) -> str:
     if not selected_ids:
         return "—"
     return await funnel_service.build_description(session, selected_ids)
+
+
+# Шаги для админского создания продукта (без filling, decor — мультивыбор)
+ADMIN_PRODUCT_STEPS: list[tuple[str, ComponentType]] = [
+    ("shape", ComponentType.shape),
+    ("decoration", ComponentType.decor),
+    ("persons", ComponentType.persons),
+    ("occasion", ComponentType.occasion),
+]
+
+ADMIN_PRODUCT_TITLES = {
+    "shape": "Укажите форму:",
+    "decoration": "Укажите оформление:",
+    "persons": "Укажите количество персон:",
+    "occasion": "Укажите повод:",
+}

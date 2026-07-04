@@ -16,6 +16,15 @@ from keyboards.admin import (
 )
 from utils.message import remember_bot_messages, send_replacing_message
 
+from states.admin_product import AdminManualOrderFSM
+from states.order import OrderFSM
+from db.repositories import users as users_repo
+from aiogram.types import Message
+
+from states.admin_product import AdminManualOrderFSM
+from states.order import OrderFSM
+from db.repositories import users as users_repo
+from aiogram.types import Message
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -163,6 +172,7 @@ async def set_status(cb: CallbackQuery):
     )
 
 
+
 @router.callback_query(F.data == "adm:remind_tomorrow")
 async def remind_tomorrow(cb: CallbackQuery, state: FSMContext):
     if not _is_admin(cb):
@@ -193,19 +203,99 @@ async def remind_tomorrow(cb: CallbackQuery, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.in_({"adm:search", "adm:manual_order"}))
-async def admin_deferred_tools(cb: CallbackQuery, state: FSMContext):
+
+
+@router.callback_query(F.data == "adm:manual_order")
+async def manual_order_start(cb: CallbackQuery, state: FSMContext):
     if not _is_admin(cb):
         await cb.answer("Нет доступа", show_alert=True)
         return
     await cb.answer()
-    text = (
-        "Поиск заказа будет искать по номеру, username, дате, статусу, имени и телефону."
-        if cb.data == "adm:search"
-        else "Ручное создание заказа будет последовательно спрашивать клиента, дату, описание, цену и статус."
+    await state.clear()
+    await state.set_state(AdminManualOrderFSM.contact)
+    await _show_admin_section(
+        cb, state,
+        "Создание заказа. Укажите контакт клиента (@ник или telegram_id):",
+        None,
     )
-    await _show_admin_section(cb, state, text, admin_menu())
 
+
+@router.message(AdminManualOrderFSM.contact, F.text)
+async def manual_order_contact(message: Message, state: FSMContext):
+    if message.from_user.id != settings.admin_telegram_id:
+        return
+    raw = message.text.strip()
+    async with async_session() as s:
+        if raw.startswith("@"):
+            user = await users_repo.get_by_username(s, raw[1:])
+        elif raw.isdigit():
+            user = await users_repo.get_by_telegram_id(s, int(raw))
+        else:
+            user = None
+    if not user:
+        await message.answer("Клиент не найден. Он должен хотя бы раз написать боту. Введите @ник или telegram_id ещё раз:")
+        return
+
+    # запускаем обычную воронку, но помечаем, что заказ для этого клиента
+    await state.update_data(_manual_user_id=user.id)
+    from handlers.user.funnel import start_funnel_from
+    await start_funnel_from(message.bot, message.chat.id, state, message.from_user)
+
+
+
+
+from states.admin_product import AdminManualOrderFSM, AdminSearchFSM
+
+
+@router.callback_query(F.data == "adm:search")
+async def admin_search(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin(cb):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    await state.clear()
+    await state.set_state(AdminSearchFSM.query)
+    await _show_admin_section(
+        cb, state,
+        "Введите @ник клиента или дату заказа в формате ДД.ММ.ГГГГ:",
+        None,
+    )
+
+
+@router.message(AdminSearchFSM.query, F.text)
+async def admin_search_query(message: Message, state: FSMContext):
+    if message.from_user.id != settings.admin_telegram_id:
+        return
+    raw = message.text.strip()
+    await state.clear()
+
+    orders = []
+    async with async_session() as s:
+        # поиск по дате ДД.ММ.ГГГГ
+        target_date = None
+        try:
+            target_date = date(*reversed([int(x) for x in raw.split(".")]))
+        except Exception:
+            target_date = None
+
+        if target_date:
+            orders = await order_repo.list_by_desired_date(s, target_date)
+        else:
+            username = raw[1:] if raw.startswith("@") else raw
+            user = await users_repo.get_by_username(s, username)
+            if not user and raw.isdigit():
+                user = await users_repo.get_by_telegram_id(s, int(raw))
+            if user:
+                orders = await order_repo.list_by_user(s, user.id)
+
+    if not orders:
+        await message.answer("Заказы не найдены.", reply_markup=orders_filter_kb())
+        return
+
+    await message.answer(
+        f"Найдено заказов: {len(orders)}",
+        reply_markup=orders_list_kb(orders),
+    )
 
 @router.callback_query(F.data == "adm:menu")
 async def back_to_admin_menu(cb: CallbackQuery, state: FSMContext):

@@ -73,10 +73,11 @@ def orders_list_kb(orders) -> InlineKeyboardMarkup:
     rows = []
     for order in orders:
         description = (order.description or "без описания").replace("\n", " ")
-        if len(description) > 28:
-            description = f"{description[:25]}..."
+        if len(description) > 24:
+            description = f"{description[:21]}..."
+        date_text = order.desired_date or "без даты"
         rows.append([InlineKeyboardButton(
-            text=f"Открыть #{order.id} · {ORDER_LIST_STATUS_LABEL.get(order.status, order.status)} · {description}",
+            text=f"{ORDER_LIST_STATUS_LABEL.get(order.status, order.status)} · {date_text} · {description}",
             callback_data=f"adm:order:{order.id}",
         )])
     rows.append([InlineKeyboardButton(text="Показать фильтры", callback_data="adm:orders")])
@@ -126,12 +127,28 @@ def product_confirm_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def product_component_kb(components) -> InlineKeyboardMarkup:
+def product_component_kb(components, allow_create: bool = False, ctype: str | None = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=component.name, callback_data=f"adm:product:component:{component.id}")]
         for component in components
     ]
+    if allow_create and ctype:
+        rows.append([InlineKeyboardButton(text="➕ Создать новый", callback_data=f"adm:comp:new:{ctype}")])
     rows.append([InlineKeyboardButton(text="Пропустить", callback_data="adm:product:component:skip")])
+    rows.append([InlineKeyboardButton(text="Отменить создание", callback_data="adm:product:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def product_decor_multi_kb(components, selected_ids: list[int]) -> InlineKeyboardMarkup:
+    selected = set(selected_ids)
+    rows = []
+    for c in components:
+        mark = "✓ " if c.id in selected else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{c.name}",
+            callback_data=f"adm:product:decor:{c.id}",
+        )])
+    rows.append([InlineKeyboardButton(text="Готово (оформление)", callback_data="adm:product:decor:done")])
     rows.append([InlineKeyboardButton(text="Отменить создание", callback_data="adm:product:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -152,6 +169,12 @@ def edit_products_kb(products) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="Открыть каталог", callback_data="adm:edit")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def product_availability_kb(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Доступен", callback_data=f"adm:set_avail:{product_id}:active")],
+        [InlineKeyboardButton(text="⛔ В стоп-лист", callback_data=f"adm:set_avail:{product_id}:unavailable")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"adm:edit:product:{product_id}")],
+    ])
 
 def edit_product_kb(product_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -160,6 +183,7 @@ def edit_product_kb(product_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Изменить описание", callback_data=f"adm:edit:product_field:{product_id}:description")],
         [InlineKeyboardButton(text="Изменить цену", callback_data=f"adm:edit:product_field:{product_id}:price")],
         [InlineKeyboardButton(text="Изменить компоненты", callback_data=f"adm:edit:product_field:{product_id}:components")],
+        [InlineKeyboardButton(text="Изменить доступность", callback_data=f"adm:edit:availability:{product_id}")],
         [InlineKeyboardButton(text="Открыть продукты", callback_data="adm:edit:products")],
     ])
 

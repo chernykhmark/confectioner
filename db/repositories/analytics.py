@@ -29,13 +29,34 @@ async def orders_summary(session: AsyncSession, since: datetime):
     }
 
 
+async def status_counts(session: AsyncSession):
+    res = await session.execute(
+        select(Order.status, func.count(Order.id)).group_by(Order.status)
+    )
+    raw = {status: int(count) for status, count in res.all()}
+    active = sum(
+        raw.get(s, 0) for s in (
+            OrderStatus.created, OrderStatus.confirmed,
+            OrderStatus.in_progress, OrderStatus.ready, OrderStatus.paid,
+        )
+    )
+    return {
+        "active": active,
+        "closed": raw.get(OrderStatus.closed, 0),
+        "cancelled": raw.get(OrderStatus.cancelled, 0),
+    }
+
+
 async def dashboard(session: AsyncSession):
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     week_start = now - timedelta(days=7)
     return {
         "today": await orders_summary(session, today_start),
+        "month": await orders_summary(session, month_start),
         "week": await orders_summary(session, week_start),
+        "statuses": await status_counts(session),
         "popular_fillings": await popular_components(session, ComponentType.filling, week_start),
         "funnel": await funnel_summary(session, week_start),
     }

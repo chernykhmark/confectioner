@@ -1,20 +1,16 @@
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery
 
 from db.base import async_session
 from db.repositories import products as product_repo
 from states.order import OrderFSM
-from keyboards.user import date_wishes_kb, templates_kb, template_card_kb
+from keyboards.user import templates_kb, template_card_kb
 from handlers.admin.monitoring import registry
 from utils.message import (
-    delete_message_ids,
     image_input,
-    last_bot_message_ids,
     remember_bot_messages,
-    send_step,
 )
-import asyncio
 
 router = Router()
 
@@ -87,30 +83,15 @@ async def choose_template(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
     await state.update_data(_is_template=True, template_id=product.id)
-    await state.set_state(OrderFSM.template_date)
-    registry.set(cb.message.chat.id, "template_date")
+    registry.set(cb.message.chat.id, "date_wishes")
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
 
-    await send_step(
-        cb.bot,
-        cb.message.chat.id,
-        state,
-        "Выберите дату доставки/самовывоза.\n\nВведите дату в формате ДД.ММ.ГГГГ:",
-        date_wishes_kb(),
-    )
-
-
-@router.callback_query(OrderFSM.template_date, F.data == "tpl:nodate")
-async def template_no_date(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
-    await state.update_data(desired_date=None)
-    from handlers.user.checkout import ask_delivery_type
-    await ask_delivery_type(cb.bot, cb.message.chat.id, state)
-
-
-@router.message(OrderFSM.template_date, F.text)
-async def template_input_date(message: Message, state: FSMContext):
-    from handlers.user.checkout import process_date_text
-    await process_date_text(message, state)
+    # кнопочный выбор даты (как в обычной воронке)
+    from handlers.user.checkout import ask_date
+    await ask_date(cb.bot, cb.message.chat.id, state)
 
 
 async def _show_template_confirm(bot, chat_id, state):

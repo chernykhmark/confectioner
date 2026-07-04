@@ -9,7 +9,7 @@ from db.repositories import calendar as calendar_repo, orders as order_repo, use
 from keyboards.admin import STATUS_LABEL
 from keyboards.user import account_kb, repeat_order_kb, user_order_kb, user_orders_kb
 from services import funnel_service
-from services.relay_service import relay
+
 from states.order import OrderFSM
 from utils.message import remember_bot_messages, send_photo_or_message, send_step
 from . import checkout
@@ -27,6 +27,20 @@ TIMELINE = [
 
 EDITABLE_STATUSES = {OrderStatus.created, OrderStatus.confirmed}
 
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+async def _notify_admin_change(bot, order_id: int, user, action: str):
+    uname = f"@{user.username}" if user.username else "без ника"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Посмотреть изменения в заказе", callback_data=f"adm:order:{order_id}")
+    try:
+        await bot.send_message(
+            settings.admin_telegram_id,
+            f"Клиент {user.first_name or '—'} ({uname}) {action} заказ #{order_id}.",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception:
+        pass
 
 def _status_timeline(status: OrderStatus) -> str:
     if status == OrderStatus.cancelled:
@@ -229,8 +243,14 @@ async def input_edit_order_date(message: Message, state: FSMContext):
             )
             return
         await order_repo.update_order_fields(session, order_id, desired_date=desired_date)
+        await order_repo.update_order_fields(session, order_id, desired_date=desired_date)
+        user = await users_repo.get_or_create_user(session, message.from_user)
+    await _notify_admin_change(message.bot, order_id, user, "изменил дату в")
     await state.clear()
     await message.answer(f"Дата заказа #{order_id} изменена на {checkout.format_date(desired_date)}.")
+    await state.clear()
+    await message.answer(f"Дата заказа #{order_id} изменена на {checkout.format_date(desired_date)}.")
+
 
 
 @router.callback_query(F.data.startswith("acct:edit_comment:"))
@@ -263,6 +283,11 @@ async def input_edit_order_comment(message: Message, state: FSMContext):
             order_id,
             customer_comment=message.text.strip()[:1000],
         )
+        await order_repo.update_order_fields(session, order_id, customer_comment=message.text.strip()[:1000])
+        user = await users_repo.get_or_create_user(session, message.from_user)
+    await _notify_admin_change(message.bot, order_id, user, "изменил комментарий в")
+    await state.clear()
+    await message.answer(f"Комментарий к заказу #{order_id} обновлён.")
     await state.clear()
     await message.answer(f"Комментарий к заказу #{order_id} обновлён.")
 
@@ -287,18 +312,25 @@ async def cancel_user_order(cb: CallbackQuery, state: FSMContext):
             )
             return
         await order_repo.update_status(session, order.id, OrderStatus.cancelled)
+        await order_repo.update_status(session, order.id, OrderStatus.cancelled)
+    await _notify_admin_change(cb.bot, order_id, user, "отменил")
+    await send_step(cb.bot, cb.message.chat.id, state, f"Заказ #{order_id} отменён.", account_kb())
     await send_step(cb.bot, cb.message.chat.id, state, f"Заказ #{order_id} отменён.", account_kb())
 
 
 @router.callback_query(F.data == "acct:contact")
 async def contact_admin(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    relay.start(settings.admin_telegram_id, cb.from_user.id)
+    uname = f"@{cb.from_user.username}" if cb.from_user.username else "без ника"
     await cb.bot.send_message(
         cb.from_user.id,
-        "Напишите сообщение кондитеру. После ответа администратора диалог продолжится здесь.",
+        "Ваш запрос отправлен кондитеру. Он свяжется с вами в ближайшее время.",
     )
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Написать клиенту", callback_data=f"relay:start:{cb.from_user.id}")
     await cb.bot.send_message(
         settings.admin_telegram_id,
-        f"Пользователь {cb.from_user.full_name} хочет связаться с кондитером.",
+        f"Клиент {cb.from_user.full_name} ({uname}, id {cb.from_user.id}) хочет связаться с кондитером.",
+        reply_markup=kb.as_markup(),
     )

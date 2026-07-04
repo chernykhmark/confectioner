@@ -8,6 +8,16 @@ from db.models import User
 
 
 
+from sqlalchemy import select
+from db.models import User
+
+async def get_by_username(session, username: str):
+    res = await session.execute(select(User).where(User.username == username))
+    return res.scalar_one_or_none()
+
+async def get_by_telegram_id(session, telegram_id: int):
+    res = await session.execute(select(User).where(User.telegram_id == telegram_id))
+    return res.scalar_one_or_none()
 
 async def get_or_create_user(session: AsyncSession, tg_user) -> User:
     res = await session.execute(select(User).where(User.telegram_id == tg_user.id))

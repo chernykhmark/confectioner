@@ -2,6 +2,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import Component, ComponentType
 
+from db.models import Component
+
+async def create_component(session, *, type, name, price_delta):
+    component = Component(type=type, name=name, price_delta=price_delta, is_active=True)
+    session.add(component)
+    await session.commit()
+    await session.refresh(component)
+    return component
 
 async def list_by_type(session: AsyncSession, ctype: ComponentType):
     res = await session.execute(

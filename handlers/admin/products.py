@@ -20,14 +20,45 @@ from keyboards.admin import (
     product_cancel_kb,
     product_component_kb,
     product_confirm_kb,
+    product_decor_multi_kb,
     product_image_kb,
 )
 from services import catalog_service
 from states.admin_product import AdminEditFSM, AdminProductFSM
-from utils.message import remember_bot_messages
+from utils.message import remember_bot_messages, send_photo_or_message
+from states.admin_product import AdminNewComponentFSM
+
 
 router = Router()
 
+from keyboards.admin import product_availability_kb
+from db.models import ProductStatus
+
+
+@router.callback_query(F.data.startswith("adm:edit:availability:"))
+async def edit_availability(cb: CallbackQuery):
+    if not _is_admin_user(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    product_id = int(cb.data.split(":")[3])
+    await cb.message.edit_text(
+        "Выберите доступность продукта:",
+        reply_markup=product_availability_kb(product_id),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:set_avail:"))
+async def set_availability(cb: CallbackQuery):
+    if not _is_admin_user(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    _, _, product_id_raw, status_raw = cb.data.split(":")
+    product_id = int(product_id_raw)
+    async with async_session() as session:
+        await product_repo.update_product(session, product_id, status=ProductStatus(status_raw))
+    await _show_edit_product(cb.message, product_id)
 
 def _is_admin_user(user_id: int | None) -> bool:
     return user_id == settings.admin_telegram_id
@@ -49,6 +80,60 @@ def _full_description(description: str, ingredients: str) -> str:
 async def _remember_prompt(message: Message, state: FSMContext):
     await remember_bot_messages(state, [message])
 
+
+
+
+@router.callback_query(F.data.startswith("adm:comp:new:"))
+async def new_component_start(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin_user(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    ctype = cb.data.split(":")[-1]
+    # запоминаем контекст редактора, чтобы вернуться
+    data = await state.get_data()
+    # определяем контекст: создание продукта или редактирование
+    from_create = "product_component_step" in data
+    await state.update_data(
+        _new_comp_type=ctype,
+        _new_comp_return=dict(data),
+        _new_comp_return_state="create" if from_create else "edit",
+    )
+    await state.set_state(AdminNewComponentFSM.name)
+    await cb.message.answer("Введите название нового компонента:")
+
+
+@router.message(AdminNewComponentFSM.name, F.text)
+async def new_component_name(message: Message, state: FSMContext):
+    if not _is_admin_user(message.from_user.id):
+        return
+    await state.update_data(_new_comp_name=message.text.strip()[:64])
+    await state.set_state(AdminNewComponentFSM.price)
+    await message.answer("Введите надбавку к цене (число, 0 если нет):")
+
+
+@router.message(AdminNewComponentFSM.price, F.text)
+async def new_component_price(message: Message, state: FSMContext):
+    if not _is_admin_user(message.from_user.id):
+        return
+    price = _price_from_text(message.text) or Decimal("0")
+    data = await state.get_data()
+    ctype = ComponentType(data["_new_comp_type"])
+    async with async_session() as session:
+        component = await component_repo.create_component(
+            session, type=ctype, name=data["_new_comp_name"], price_delta=price,
+        )
+    await message.answer(f"Компонент «{component.name}» создан. Выберите его в списке.")
+    # вернуть в редактор компонентов
+    prev = data.get("_new_comp_return") or {}
+    return_state = data.get("_new_comp_return_state", "edit")
+    await state.set_data(prev)
+    if return_state == "create":
+        await state.set_state(AdminProductFSM.components)
+        await _show_component_pick(message, state)
+    else:
+        await state.set_state(AdminEditFSM.product_components)
+        await _show_edit_product_component_pick(message, state)
 
 @router.callback_query(F.data == "adm:product:new")
 async def start_product_create(cb: CallbackQuery, state: FSMContext):
@@ -182,29 +267,37 @@ async def product_ingredients(message: Message, state: FSMContext):
     await state.update_data(
         ingredients=ingredients,
         product_component_ids=[],
+        product_decor_ids=[],
         product_component_step=0,
     )
     await state.set_state(AdminProductFSM.components)
     await _show_component_pick(message, state)
 
-
 async def _show_component_pick(message: Message, state: FSMContext):
     data = await state.get_data()
     step_index = data.get("product_component_step", 0)
-    if step_index >= len(catalog_service.CATALOG_STEPS):
+    steps = catalog_service.ADMIN_PRODUCT_STEPS
+    if step_index >= len(steps):
         await _show_product_confirm(message, state)
         return
 
-    step_key, component_type = catalog_service.CATALOG_STEPS[step_index]
+    step_key, component_type = steps[step_index]
     async with async_session() as session:
         components = await component_repo.list_by_type(session, component_type)
 
-    title = catalog_service.CATALOG_TITLES[step_key].replace("Выберите", "Укажите")
-    msg = await message.answer(
-        f"Компоненты каталога: {title}\n\n"
-        "Это нужно, чтобы продукт участвовал в подборе готовых вариантов.",
-        reply_markup=product_component_kb(components),
-    )
+    title = catalog_service.ADMIN_PRODUCT_TITLES[step_key]
+
+    if step_key == "decoration":
+        selected = data.get("product_decor_ids") or []
+        msg = await message.answer(
+            f"{title}\n\nМожно выбрать до 5 элементов.",
+            reply_markup=product_decor_multi_kb(components, selected),
+        )
+    else:
+        msg = await message.answer(
+            title,
+            reply_markup=product_component_kb(components, allow_create=True, ctype=component_type.value),
+        )
     await _remember_prompt(msg, state)
 
 
@@ -212,16 +305,29 @@ async def _show_product_confirm(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(AdminProductFSM.confirming)
 
+    total_components = len(data.get("product_component_ids") or []) + len(data.get("product_decor_ids") or [])
     summary = (
         "<b>Проверьте продукт</b>\n\n"
         f"Название: {data['name']}\n"
         f"Описание: {data['description']}\n"
         f"Цена: <b>{int(Decimal(data['price']))}₽</b>\n"
         f"Состав: {data['ingredients']}\n"
-        f"Компонентов каталога: {len(data.get('product_component_ids') or [])}\n"
+        f"Компонентов каталога: {total_components}\n"
         f"Изображение: {'добавлено' if data.get('image_url') else 'нет'}"
     )
-    msg = await message.answer(summary, parse_mode="HTML", reply_markup=product_confirm_kb())
+    image_url = data.get("image_url")
+    if image_url:
+        msg = await send_photo_or_message(
+            message.bot,
+            message.chat.id,
+            image_url,
+            summary,
+            parse_mode="HTML",
+            reply_markup=product_confirm_kb(),
+            log_context="admin_product_confirm",
+        )
+    else:
+        msg = await message.answer(summary, parse_mode="HTML", reply_markup=product_confirm_kb())
     await _remember_prompt(msg, state)
 
 
@@ -247,6 +353,40 @@ async def product_component(cb: CallbackQuery, state: FSMContext):
     await _show_component_pick(cb.message, state)
 
 
+@router.callback_query(AdminProductFSM.components, F.data.startswith("adm:product:decor:"))
+async def product_decor(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin_user(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    await cb.answer()
+    data = await state.get_data()
+    decor_ids = list(data.get("product_decor_ids") or [])
+    raw = cb.data.split(":")[-1]
+
+    if raw == "done":
+        await state.update_data(product_component_step=data.get("product_component_step", 0) + 1)
+        await _show_component_pick(cb.message, state)
+        return
+
+    component_id = int(raw)
+    if component_id in decor_ids:
+        decor_ids.remove(component_id)
+    elif len(decor_ids) < 5:
+        decor_ids.append(component_id)
+    else:
+        await cb.answer("Можно выбрать не более 5", show_alert=True)
+        return
+
+    await state.update_data(product_decor_ids=decor_ids)
+    async with async_session() as session:
+        components = await component_repo.list_by_type(session, ComponentType.decor)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=product_decor_multi_kb(components, decor_ids))
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data == "adm:product:confirm")
 async def confirm_product_create(cb: CallbackQuery, state: FSMContext):
     if not _is_admin_user(cb.from_user.id):
@@ -261,6 +401,7 @@ async def confirm_product_create(cb: CallbackQuery, state: FSMContext):
 
     await cb.answer()
     description = _full_description(data["description"], data["ingredients"])
+    all_component_ids = list(data.get("product_component_ids") or []) + list(data.get("product_decor_ids") or [])
     async with async_session() as session:
         product = await product_repo.create_template_product(
             session,
@@ -268,17 +409,15 @@ async def confirm_product_create(cb: CallbackQuery, state: FSMContext):
             description=description,
             price=Decimal(data["price"]),
             image_url=data.get("image_url"),
-            component_ids=data.get("product_component_ids") or [],
+            component_ids=all_component_ids,
         )
 
+    await cb.answer()
     await state.clear()
-    await cb.message.edit_text(
-        f"Продукт #{product.id} создан.\n\n"
-        f"Название: {product.name}\n"
-        f"Цена: {int(product.price)}₽",
-        reply_markup=admin_menu(),
-    )
-
+    try:
+        await cb.message.edit_text("Создание продукта отменено.", reply_markup=admin_menu())
+    except Exception:
+        await cb.message.answer("Создание продукта отменено.", reply_markup=admin_menu())
 
 @router.callback_query(F.data == "adm:product:cancel")
 async def cancel_product_create(cb: CallbackQuery, state: FSMContext):
@@ -288,7 +427,10 @@ async def cancel_product_create(cb: CallbackQuery, state: FSMContext):
 
     await cb.answer()
     await state.clear()
-    await cb.message.edit_text("Создание продукта отменено.", reply_markup=admin_menu())
+    try:
+        await cb.message.edit_text("Создание продукта отменено.", reply_markup=admin_menu())
+    except Exception:
+        await cb.message.answer("Создание продукта отменено.", reply_markup=admin_menu())
 
 
 def _component_type_from_raw(raw: str) -> ComponentType:
@@ -303,10 +445,12 @@ async def _show_edit_product(message: Message, product_id: int):
         return
 
     components = ", ".join(pc.component.name for pc in product.components) or "не указаны"
+    status_text = "Доступен" if product.status == ProductStatus.active else "В стоп-листе"
     text = (
         f"<b>Продукт #{product.id}</b>\n"
         f"Название: {product.name}\n"
         f"Цена: <b>{int(product.price)}₽</b>\n"
+        f"Доступность: {status_text}\n"
         f"Компоненты: {components}\n"
         f"Фото: {'есть' if product.image_url else 'нет'}\n\n"
         f"{product.description or ''}"
@@ -459,7 +603,10 @@ async def _show_edit_product_component_pick(message: Message, state: FSMContext)
     async with async_session() as session:
         components = await component_repo.list_by_type(session, component_type)
     title = catalog_service.CATALOG_TITLES[step_key].replace("Выберите", "Укажите")
-    await message.answer(title, reply_markup=product_component_kb(components))
+    await message.answer(
+        title,
+        reply_markup=product_component_kb(components, allow_create=True, ctype=component_type.value),
+    )
 
 
 @router.callback_query(AdminEditFSM.product_components, F.data.startswith("adm:product:component:"))
